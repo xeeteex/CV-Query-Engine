@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+python-multipart
+pymongo
+python-jose[cryptography]
+passlib[bcrypt]
+sentence-transformers
+pinecone
+langchain
+langchain-community
+langchain-mistralai
+mistralai
+python-docx
+pymupdf
+python-dotenv
+fastapi-mcp
