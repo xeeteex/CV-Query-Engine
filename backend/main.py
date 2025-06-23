@@ -1,6 +1,8 @@
 import os, uuid, shutil
 from dotenv import load_dotenv
-from fastapi_mcp import FastApiMCP
+from fastapi import FastAPI
+from pymongo import MongoClient
+from auth.routes import router 
 
 # Load environment variables first
 load_dotenv()
@@ -12,6 +14,9 @@ from rag.extractor import extract_pdf, extract_docx
 from rag.chunker import chunk_text
 from rag.pinecone_client import store_chunks, query_chunks
 from rag.agentic_rag import get_agentic_chain, extract_structured_cv_data, filter_relevant_candidates
+from rag.memory import add_message, get_memory, compress_memory
+
+MONGODB_URI = "mongodb+srv://xeeteexstha:abcd1234@auth.exmhjp5.mongodb.net/cv_database?retryWrites=true&w=majority&appName=Auth" # Replace with your actual URI
 
 app = FastAPI()
 
@@ -22,6 +27,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+def startup_db_client():
+    app.mongodb_client = MongoClient(MONGODB_URI)
+    # Explicitly get the database from the client
+    app.mongodb = app.mongodb_client.get_database("cv_database")
+
+@app.on_event("shutdown")
+def shutdown_db_client():
+    app.mongodb_client.close()
+
+app.include_router(router, prefix="/api/auth", tags=["auth"])
 
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...)):
@@ -47,8 +64,17 @@ async def upload_file(file: UploadFile = File(...)):
 async def ask_question(payload: dict):
     try:
         question = payload.get("question", "q")
+        session_id = payload.get("session_id", "default")
         if not question:
             return {"error": "Question is required"}
+        
+        # --- Conversation Memory Logic ---
+        # Add the current question to memory as 'user'
+        add_message(session_id, "user", question)
+        # Retrieve and compress prior memory
+        prior_memory = compress_memory(get_memory(session_id), max_messages=10)
+        # Optionally, create a compressed string or summary for the prompt
+        prior_memory_str = "\n".join([f"{m['role']}: {m['message']}" for m in prior_memory if m['role'] != 'assistant'])
         
         # Step 1: Get initial chunks from vector database
         chunks = query_chunks(question, top_k=8)
@@ -188,10 +214,13 @@ async def ask_question(payload: dict):
             # Add summary
             answer += f"**Summary:** Found {len(structured_data)} candidates matching your criteria for '{question}'."
         
+        # At the end, before returning, add the answer to memory as 'assistant'
+        add_message(session_id, "assistant", answer)
         return {
             "answer": answer,
             "sources": relevant_chunks,  # Only return relevant chunks as sources
-            "structured_data": structured_data
+            "structured_data": structured_data,
+            "prior_memory": prior_memory_str  # Optionally return for debugging/UI
         }
         
     except Exception as e:
@@ -203,6 +232,6 @@ async def ask_question(payload: dict):
             "structured_data": []
         }
 
-
-mcp = FastApiMCP(app)
-mcp.mount()
+# Comment out or remove these lines as they might be interfering with route registrations
+# mcp = FastApiMCP(app)
+# mcp.mount()

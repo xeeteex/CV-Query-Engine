@@ -14,3 +14,6 @@ python-docx
 pymupdf
 python-dotenv
 fastapi-mcp
+pymongo
+python-jose
+passlib[bcrypt]
