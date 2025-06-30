@@ -1,5 +1,41 @@
 import React, { useState } from 'react';
 
+// Format source data with syntax highlighting and better formatting
+const formatSourceData = (source) => {
+  try {
+    // Try to parse as JSON for pretty printing
+    const parsed = JSON.parse(source);
+    return JSON.stringify(parsed, null, 2);
+  } catch (e) {
+    // If not JSON, try to format as key-value pairs
+    if (typeof source === 'string' && source.includes(':')) {
+      return source
+        .split('\n')
+        .map(line => {
+          // Add indentation for nested objects/arrays
+          const indent = (line.match(/^\s*/) || [''])[0].length / 2;
+          const trimmed = line.trim();
+          
+          // Add syntax highlighting for keys and values
+          if (trimmed.endsWith('{') || trimmed.endsWith('[') || trimmed.endsWith('}') || trimmed.endsWith(']')) {
+            return '  '.repeat(indent) + `<span class="text-purple-600">${trimmed}</span>`;
+          }
+          
+          const [key, ...valueParts] = trimmed.split(':');
+          const value = valueParts.join(':');
+          
+          if (!key || !value) return '  '.repeat(indent) + trimmed;
+          
+          return `  ${'  '.repeat(indent)}<span class="text-blue-600">${key.trim()}</span>: <span class="text-gray-800">${value.trim()}</span>`;
+        })
+        .join('\n');
+    }
+    
+    // Return as is if no special formatting applies
+    return source;
+  }
+};
+
 const AnswerCard = ({ answer, sources, structured_data }) => {
   const [expandedSources, setExpandedSources] = useState(false);
   const [selectedCandidates, setSelectedCandidates] = useState([]);
@@ -10,72 +46,213 @@ const AnswerCard = ({ answer, sources, structured_data }) => {
   // Function to render structured CV data
   const renderStructuredCV = (cvData, index = null, isCompact = false) => {
     if (isCompact) {
+      // Calculate total years of experience if available
+      const totalExperience = cvData.EXPERIENCE?.reduce((total, exp) => {
+        if (exp.DURATION) {
+          // Simple extraction of years from duration string (e.g., "2 years" -> 2)
+          const yearsMatch = exp.DURATION.match(/(\d+)\s*(?:year|yr|y)/i);
+          if (yearsMatch) return total + parseInt(yearsMatch[1], 10);
+        }
+        return total;
+      }, 0);
+
       return (
-        <div className="space-y-4">
+        <div className="space-y-6">
           {/* Compact Header */}
-          <div className="text-center border-b border-[#4A5A6B]/20 pb-6">
-            <h3 className="text-xl font-bold text-[#4A5A6B] mb-2">{cvData.NAME || 'Unknown'}</h3>
-            {cvData.LOCATION && (
-              <p className="text-[#4A5A6B]/80 text-sm">{cvData.LOCATION}</p>
+          <div className="text-center">
+            <div className="w-20 h-20 mx-auto mb-3 rounded-full bg-gradient-to-br from-blue-50 to-indigo-50 flex items-center justify-center text-2xl font-bold text-indigo-600 border-2 border-white shadow-sm">
+              {cvData.NAME ? cvData.NAME.charAt(0).toUpperCase() : '?'}
+            </div>
+            <h3 className="text-xl font-bold text-gray-900">{cvData.NAME || 'Unknown Candidate'}</h3>
+            
+            <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
+              {totalExperience > 0 && (
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                  {totalExperience}+ years experience
+                </span>
+              )}
+              {cvData.LOCATION && (
+                <span className="inline-flex items-center text-sm text-gray-600">
+                  <svg className="w-3.5 h-3.5 mr-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  {cvData.LOCATION}
+                </span>
+              )}
+            </div>
+            
+            {cvData.EMAIL && (
+              <a 
+                href={`mailto:${cvData.EMAIL}`}
+                className="inline-block mt-2 text-sm text-blue-600 hover:text-blue-800 hover:underline"
+                title="Email candidate"
+              >
+                {cvData.EMAIL}
+              </a>
             )}
           </div>
 
           {/* Compact Education */}
           {cvData.EDUCATION && cvData.EDUCATION.length > 0 && (
-            <div>
-              <h4 className="font-semibold text-[#4A5A6B] mb-2 flex items-center space-x-2">
+            <div className="space-y-3">
+              <h4 className="font-semibold text-[#4A5A6B] flex items-center space-x-2 text-sm uppercase tracking-wider text-gray-500">
                 <svg className="w-4 h-4 text-[#45B39C]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14l9-5-9-5-9 5 9 5z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z" />
                 </svg>
                 <span>Education</span>
               </h4>
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {cvData.EDUCATION.slice(0, 2).map((edu, idx) => (
-                  <div key={idx} className="bg-[#E1E6E9]/30 rounded p-3 border border-[#4A5A6B]/20">
-                    <p className="font-medium text-[#4A5A6B]">{edu.DEGREE}</p>
-                    <p className="text-sm text-[#4A5A6B]/80">{edu.INSTITUTION}</p>
+                  <div key={idx} className="bg-white rounded-lg shadow-sm border border-gray-100 p-4 hover:shadow-md transition-shadow duration-200">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <p className="font-semibold text-gray-800">{edu.DEGREE || 'Degree not specified'}</p>
+                        <p className="text-sm text-gray-600 mt-1">{edu.INSTITUTION || 'Institution not specified'}</p>
+                      </div>
+                      {edu.DURATION && (
+                        <span className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded-full">
+                          {edu.DURATION}
+                        </span>
+                      )}
+                    </div>
+                    {edu.FIELD_OF_STUDY && (
+                      <p className="text-xs text-gray-500 mt-2">
+                        <span className="font-medium">Field:</span> {edu.FIELD_OF_STUDY}
+                      </p>
+                    )}
                   </div>
                 ))}
+                {cvData.EDUCATION.length > 2 && (
+                  <p className="text-xs text-gray-500 text-center">+{cvData.EDUCATION.length - 2} more education entries</p>
+                )}
               </div>
             </div>
           )}
 
           {/* Compact Experience */}
           {cvData.EXPERIENCE && cvData.EXPERIENCE.length > 0 && (
-            <div>
-              <h4 className="font-semibold text-[#4A5A6B] mb-2 flex items-center space-x-2">
+            <div className="space-y-3">
+              <h4 className="font-semibold text-[#4A5A6B] flex items-center space-x-2 text-sm uppercase tracking-wider text-gray-500">
                 <svg className="w-4 h-4 text-[#45B39C]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2-2v2m8 0V6a2 2 0 012 2v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8a2 2 0 012-2V6" />
                 </svg>
                 <span>Experience</span>
               </h4>
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {cvData.EXPERIENCE.slice(0, 2).map((exp, idx) => (
-                  <div key={idx} className="bg-[#E1E6E9]/30 rounded p-3 border border-[#4A5A6B]/20">
-                    <p className="font-medium text-[#4A5A6B]">{exp.TITLE}</p>
-                    <p className="text-sm text-[#4A5A6B]/80">{exp.COMPANY}</p>
+                  <div key={idx} className="bg-white rounded-lg shadow-sm border border-gray-100 p-4 hover:shadow-md transition-shadow duration-200">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <p className="font-semibold text-gray-800">{exp.TITLE || 'Position not specified'}</p>
+                        <p className="text-sm text-gray-600 mt-1">{exp.COMPANY || 'Company not specified'}</p>
+                      </div>
+                      {exp.DURATION && (
+                        <span className="text-xs bg-green-50 text-green-600 px-2 py-1 rounded-full whitespace-nowrap">
+                          {exp.DURATION}
+                        </span>
+                      )}
+                    </div>
+                    {exp.LOCATION && (
+                      <p className="text-xs text-gray-500 mt-1 flex items-center">
+                        <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        {exp.LOCATION}
+                      </p>
+                    )}
+                    {exp.RESPONSIBILITIES && exp.RESPONSIBILITIES.length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-xs text-gray-500 font-medium mb-1">Key Responsibilities:</p>
+                        <ul className="text-xs text-gray-600 space-y-1">
+                          {exp.RESPONSIBILITIES.slice(0, 2).map((resp, idx) => (
+                            <li key={idx} className="flex items-start">
+                              <span className="text-[#45B39C] mr-2">•</span>
+                              <span className="flex-1">{resp}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 ))}
+                {cvData.EXPERIENCE.length > 2 && (
+                  <p className="text-xs text-gray-500 text-center">+{cvData.EXPERIENCE.length - 2} more positions</p>
+                )}
               </div>
             </div>
           )}
 
           {/* Compact Skills */}
           {cvData.SKILLS && (
-            <div>
-              <h4 className="font-semibold text-[#4A5A6B] mb-2 flex items-center space-x-2">
-                <svg className="w-4 h-4 text-[#45B39C]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            <div className="space-y-3">
+              <h4 className="font-semibold text-gray-500 flex items-center space-x-2 text-sm uppercase tracking-wider">
+                <svg className="w-4 h-4 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0114 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                 </svg>
                 <span>Key Skills</span>
               </h4>
-              <div className="flex flex-wrap gap-1">
-                {cvData.SKILLS.TECHNICAL && cvData.SKILLS.TECHNICAL.slice(0, 5).map((skill, idx) => (
-                  <span key={idx} className="bg-[#45B39C]/10 text-[#45B39C] px-2 py-1 rounded text-xs font-medium">
-                    {skill}
-                  </span>
-                ))}
-              </div>
+              
+              {/* Technical Skills */}
+              {cvData.SKILLS.TECHNICAL && cvData.SKILLS.TECHNICAL.length > 0 && (
+                <div className="mb-3">
+                  <h5 className="text-xs font-medium text-gray-500 mb-2">TECHNICAL</h5>
+                  <div className="flex flex-wrap gap-2">
+                    {cvData.SKILLS.TECHNICAL.slice(0, 8).map((skill, idx) => (
+                      <span 
+                        key={`tech-${idx}`} 
+                        className="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-indigo-100 transition-colors"
+                        title={skill}
+                      >
+                        {skill.length > 15 ? `${skill.substring(0, 15)}...` : skill}
+                      </span>
+                    ))}
+                    {cvData.SKILLS.TECHNICAL.length > 8 && (
+                      <span className="text-xs text-gray-500 self-center">
+                        +{cvData.SKILLS.TECHNICAL.length - 8} more
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+              
+              {/* Soft Skills */}
+              {cvData.SKILLS.SOFT && cvData.SKILLS.SOFT.length > 0 && (
+                <div className="mb-3">
+                  <h5 className="text-xs font-medium text-gray-500 mb-2">SOFT SKILLS</h5>
+                  <div className="flex flex-wrap gap-2">
+                    {cvData.SKILLS.SOFT.slice(0, 5).map((skill, idx) => (
+                      <span 
+                        key={`soft-${idx}`} 
+                        className="bg-green-50 text-green-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-green-100 transition-colors"
+                        title={skill}
+                      >
+                        {skill}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Tools & Technologies */}
+              {cvData.SKILLS.TOOLS && cvData.SKILLS.TOOLS.length > 0 && (
+                <div>
+                  <h5 className="text-xs font-medium text-gray-500 mb-2">TOOLS & TECHNOLOGIES</h5>
+                  <div className="flex flex-wrap gap-2">
+                    {cvData.SKILLS.TOOLS.slice(0, 6).map((tool, idx) => (
+                      <span 
+                        key={`tool-${idx}`} 
+                        className="bg-amber-50 text-amber-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-amber-100 transition-colors"
+                        title={tool}
+                      >
+                        {tool}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -472,15 +649,36 @@ const AnswerCard = ({ answer, sources, structured_data }) => {
             <div className="p-6">
               <div className="space-y-4">
                 {sources.map((source, index) => (
-                  <div key={index} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                    <div className="flex items-start space-x-3">
-                      <div className="flex-shrink-0 w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                        <span className="text-sm font-medium text-blue-600">{index + 1}</span>
+                  <div key={index} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center">
+                            <span className="text-xs font-medium text-blue-600">{index + 1}</span>
+                          </div>
+                          <span className="text-xs font-medium text-gray-500">Source {index + 1}</span>
+                        </div>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigator.clipboard.writeText(source);
+                          }}
+                          className="text-xs text-blue-600 hover:text-blue-800 flex items-center space-x-1"
+                          title="Copy to clipboard"
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                          </svg>
+                          <span>Copy</span>
+                        </button>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <pre className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap font-sans">
-                          {source}
-                        </pre>
+                    </div>
+                    <div className="p-4">
+                      <div className="bg-gray-50 p-3 rounded-lg overflow-auto max-h-60">
+                        <pre 
+                          className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap font-mono"
+                          dangerouslySetInnerHTML={{ __html: formatSourceData(source) }}
+                        />
                       </div>
                     </div>
                   </div>

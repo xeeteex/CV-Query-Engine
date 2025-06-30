@@ -1,22 +1,50 @@
 import os, uuid, shutil
+import logging
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Body
 from pymongo import MongoClient
+from typing import Optional, Dict, Any
 from auth.routes import router 
+from typing import List, Dict, Any
 
+# Configure logger
+logger = logging.getLogger(__name__)
 # Load environment variables first
 load_dotenv()
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from rag.extractor import extract_pdf, extract_docx
 from rag.chunker import chunk_text
-from rag.pinecone_client import store_chunks, query_chunks
-from rag.agentic_rag import get_agentic_chain, extract_structured_cv_data, filter_relevant_candidates
-from rag.memory import add_message, get_memory, compress_memory
+from rag.pinecone_client import store_chunks, query_chunks, index  # Import index from pinecone_client
+# from rag.agentic_rag import extract_structured_cv_data, filter_relevant_candidates, extract_basic_metadata_from_cv
+from rag.index_cv import index_cv
+from rag.pipeline import run_cv_query_pipeline
+from langchain_mistralai import ChatMistralAI
 
-MONGODB_URI = "mongodb+srv://xeeteexstha:abcd1234@auth.exmhjp5.mongodb.net/cv_database?retryWrites=true&w=majority&appName=Auth" # Replace with your actual URI
+# Initialize LLM for RAG pipeline
+llm = ChatMistralAI(model="mistral-small-latest", temperature=0.1)
+
+# Simple Pinecone client wrapper for the RAG pipeline
+class PineconeClientWrapper:
+    @staticmethod
+    def query(vector, filters=None, top_k=5):
+        return index.query(
+            vector=vector,
+            filter=filters,
+            top_k=top_k,
+            include_metadata=True
+        )
+
+pinecone_client = PineconeClientWrapper()
+
+MONGODB_URI = "mongodb+srv://xeeteexstha:abcd1234@auth.exmhjp5.mongodb.net/cv_database?retryWrites=true&w=majority&appName=Auth"
+
+# Initialize MongoDB client for memory
+client = MongoClient(MONGODB_URI)
+db = client["cv_database"]
+memory_collection = db["rag_memory"]
 
 app = FastAPI()
 
@@ -55,182 +83,160 @@ async def upload_file(file: UploadFile = File(...)):
     else:
         return {"error": "Unsupported file format"}
 
-    chunks = chunk_text(text)
-    store_chunks(chunks, file.filename)
+    index_cv(text, file.filename)
 
-    return {"message": f"{len(chunks)} chunks stored from {file.filename}"}
+    return {"message": f"CV ingested from {file.filename}"}
+
+def get_user_info(request: Request, payload: dict) -> Dict[str, Any]:
+    """Extract user information from request and payload."""
+    email = "anonymous@example.com"
+    session_id = str(uuid.uuid4())
+    user_context = {}
+    
+    # Try to get user from JWT token if available
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.split(" ")[1]
+            # In a real app, you would validate the JWT token here
+            # For example: payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"]
+            # email = payload.get("email", email)
+            pass
+        except Exception as e:
+            logger.warning(f"Error processing auth token: {e}")
+    
+    # Override with payload values if provided
+    if "email" in payload and isinstance(payload["email"], str):
+        email = payload["email"].strip().lower()
+    
+    if "session_id" in payload and isinstance(payload["session_id"], str):
+        session_id = payload["session_id"]
+    
+    # Add request metadata
+    user_context.update({
+        "ip_address": request.client.host if request.client else None,
+        "user_agent": request.headers.get("user-agent"),
+        "request_id": str(uuid.uuid4())
+    })
+    
+    return {
+        "email": email,
+        "session_id": session_id,
+        "user_context": user_context
+    }
 
 @app.post("/ask/")
-async def ask_question(payload: dict):
+async def ask_question(
+    request: Request,
+    payload: dict = Body(...)
+):
+    """
+    Process a user question and return a response using the RAG pipeline.
+    
+    Expected payload:
+    {
+        "question": "Your question here",
+        "email": "user@example.com",  # Optional, defaults to anonymous
+        "session_id": "session-id"    # Optional, auto-generated if not provided
+    }
+    """
     try:
-        question = payload.get("question", "q")
-        session_id = payload.get("session_id", "default")
+        question = payload.get("question", "").strip()
         if not question:
-            return {"error": "Question is required"}
+            raise HTTPException(status_code=400, detail="Question is required")
         
-        # --- Conversation Memory Logic ---
-        # Add the current question to memory as 'user'
-        add_message(session_id, "user", question)
-        # Retrieve and compress prior memory
-        prior_memory = compress_memory(get_memory(session_id), max_messages=10)
-        # Optionally, create a compressed string or summary for the prompt
-        prior_memory_str = "\n".join([f"{m['role']}: {m['message']}" for m in prior_memory if m['role'] != 'assistant'])
+        # Get user and session info
+        user_info = get_user_info(request, payload)
         
-        # Step 1: Get initial chunks from vector database
-        chunks = query_chunks(question, top_k=8)
+        logger.info(f"Processing query for {user_info['email']} (session: {user_info['session_id']})")
         
-        if not chunks:
+        # Run the enhanced RAG pipeline with memory
+        results = run_cv_query_pipeline(
+            user_query=question,
+            llm=llm,
+            email=user_info["email"],
+            session_id=user_info["session_id"],
+            top_k=8,
+            memory=memory_collection,
+            user_context=user_info["user_context"]
+        )
+        # Ensure we have a plain dict
+        if hasattr(results, 'dict'):
+            results = results.dict()
+        
+        # Handle different response types
+        if results.get("immediate_response"):
             return {
-                "answer": "No CV documents found in the database. Please upload some CV files first using the /upload/ endpoint.",
+                "answer": results["immediate_response"],
+                "sources": [],
+                "structured_data": []
+            }
+            
+        if not results.get("success", True):
+            return {
+                "answer": results.get("response", "Unable to process your query"),
+                "error": results.get("error"),
                 "sources": [],
                 "structured_data": []
             }
         
-        # Step 2: Filter for relevance to the specific query
-        print(f"Filtering {len(chunks)} chunks for relevance to: {question}")
-        relevant_chunks = filter_relevant_candidates(chunks, question)
+        # Format successful response
+        structured_data = results.get("candidates", [])
+        answer = results.get("response", "")
         
-        if not relevant_chunks:
-            return {
-                "answer": f"No candidates found with relevant experience for: '{question}'. Try broadening your search criteria.",
-                "sources": [],
-                "structured_data": []
-            }
+        if not answer and structured_data:
+            answer = format_structured_response(structured_data)
         
-        print(f"Found {len(relevant_chunks)} relevant chunks out of {len(chunks)} total chunks")
-        
-        # Step 3: Extract structured data only from relevant chunks
-        structured_data = []
-        seen_names = set()  # To avoid duplicates
-        successful_extractions = 0
-        
-        for i, chunk in enumerate(relevant_chunks):
-            try:
-                print(f"\n--- Processing relevant chunk {i+1}/{len(relevant_chunks)} ---")
-                structured_cv = extract_structured_cv_data(chunk)
-                
-                # Check if this is a duplicate candidate (same name)
-                candidate_name = structured_cv.get('NAME', '').strip()
-                if candidate_name and candidate_name not in seen_names:
-                    seen_names.add(candidate_name)
-                    structured_data.append(structured_cv)
-                    if not candidate_name.startswith('Extraction failed') and not candidate_name.startswith('JSON parsing failed') and not candidate_name.startswith('Error occurred'):
-                        successful_extractions += 1
-                elif not candidate_name:
-                    # If no name found, still add it but with a unique identifier
-                    structured_cv['NAME'] = f"Unknown Candidate {len(structured_data) + 1}"
-                    structured_data.append(structured_cv)
-                    
-            except Exception as e:
-                print(f"Error extracting structured data from chunk {i+1}: {str(e)}")
-                # Add fallback structured data
-                structured_data.append({
-                    "NAME": f"Extraction Failed - Candidate {len(structured_data) + 1}",
-                    "LOCATION": "",
-                    "CONTACT": {"PHONE": "", "EMAIL": "", "LINKEDIN": "", "GITHUB": ""},
-                    "EDUCATION": [],
-                    "EXPERIENCE": [],
-                    "SKILLS": {"TECHNICAL": [], "SOFT_SKILLS": [], "LANGUAGES": [], "TOOLS": []},
-                    "CERTIFICATIONS": [],
-                    "PROJECTS": [],
-                    "MISCELLANEOUS": chunk
-                })
-        
-        # Create a focused answer based on the query
-        if len(structured_data) == 1:
-            cv = structured_data[0]
-            
-            # Check if extraction failed and show raw data instead
-            if cv['NAME'].startswith('Extraction failed') or cv['NAME'].startswith('JSON parsing failed') or cv['NAME'].startswith('Error occurred'):
-                answer = f"Found 1 candidate with relevant experience for '{question}'. Here's the raw content:\n\n"
-                answer += cv['MISCELLANEOUS']
-            else:
-                answer = f"Found 1 candidate with relevant experience for '{question}':\n\n"
-                answer += f"**{cv['NAME']}**\n"
-                
-                if cv['LOCATION']:
-                    answer += f"Location: {cv['LOCATION']}\n"
-                
-                if cv['CONTACT']['EMAIL']:
-                    answer += f"Email: {cv['CONTACT']['EMAIL']}\n"
-                
-                if cv['CONTACT']['PHONE']:
-                    answer += f"Phone: {cv['CONTACT']['PHONE']}\n"
-                
-                answer += "\n"
-                
-                # Show relevant experience
-                if cv['EXPERIENCE']:
-                    answer += "**Relevant Experience:**\n"
-                    for exp in cv['EXPERIENCE']:
-                        answer += f"• {exp.get('TITLE', '')} at {exp.get('COMPANY', '')} ({exp.get('DURATION', '')})\n"
-                        if exp.get('RESPONSIBILITIES'):
-                            for resp in exp.get('RESPONSIBILITIES', [])[:3]:  # Show top 3 responsibilities
-                                answer += f"  - {resp}\n"
-                    answer += "\n"
-                
-                # Show relevant skills
-                if cv['SKILLS']['TECHNICAL']:
-                    answer += f"**Technical Skills:** {', '.join(cv['SKILLS']['TECHNICAL'])}\n\n"
-                
-                if cv['EDUCATION']:
-                    answer += "**Education:**\n"
-                    for edu in cv['EDUCATION']:
-                        answer += f"• {edu.get('DEGREE', '')} from {edu.get('INSTITUTION', '')} ({edu.get('DURATION', '')})\n"
-            
-        else:
-            # Multiple relevant candidates
-            answer = f"Found {len(structured_data)} candidates with relevant experience for '{question}':\n\n"
-            
-            if successful_extractions < len(structured_data):
-                answer += f"Note: {len(structured_data) - successful_extractions} candidates had extraction issues. Showing available information.\n\n"
-            
-            for i, cv in enumerate(structured_data, 1):
-                answer += f"**{i}. {cv['NAME']}**\n"
-                
-                # If extraction failed, show a note about raw data
-                if cv['NAME'].startswith('Extraction failed') or cv['NAME'].startswith('JSON parsing failed') or cv['NAME'].startswith('Error occurred'):
-                    answer += "(Raw CV data available)\n\n"
-                else:
-                    if cv['LOCATION']:
-                        answer += f"Location: {cv['LOCATION']}\n"
-                    
-                    if cv['CONTACT']['EMAIL']:
-                        answer += f"Email: {cv['CONTACT']['EMAIL']}\n"
-                    
-                    # Show most relevant experience
-                    if cv['EXPERIENCE']:
-                        answer += "**Relevant Experience:**\n"
-                        for exp in cv['EXPERIENCE'][:2]:  # Show top 2 experiences
-                            answer += f"• {exp.get('TITLE', '')} at {exp.get('COMPANY', '')} ({exp.get('DURATION', '')})\n"
-                        answer += "\n"
-                    
-                    # Show relevant skills
-                    if cv['SKILLS']['TECHNICAL']:
-                        answer += f"**Key Skills:** {', '.join(cv['SKILLS']['TECHNICAL'][:5])}\n\n"
-                
-                answer += "---\n\n"
-            
-            # Add summary
-            answer += f"**Summary:** Found {len(structured_data)} candidates matching your criteria for '{question}'."
-        
-        # At the end, before returning, add the answer to memory as 'assistant'
-        add_message(session_id, "assistant", answer)
-        return {
-            "answer": answer,
-            "sources": relevant_chunks,  # Only return relevant chunks as sources
-            "structured_data": structured_data,
-            "prior_memory": prior_memory_str  # Optionally return for debugging/UI
+        response_data = {
+            "answer": results.get("response", "No response generated"),
+            "sources": results.get("sources", []),
+            "structured_data": results.get("candidates", []),
+            "session_id": user_info["session_id"],
+            "request_id": user_info["user_context"].get("request_id")
         }
         
+        if "debug" in payload:
+            response_data["debug"] = {
+                "user_email": user_info["email"],
+                "session_id": user_info["session_id"]
+            }
+            
+        return response_data
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error in ask_question: {str(e)}")
+        logger.error(f"Query processing failed: {e}", exc_info=True)
         return {
-            "error": f"Error processing question: {str(e)}",
-            "answer": "Unable to process your question. Please try again.",
+            "answer": "An error occurred while processing your question",
+            "error": str(e),
             "sources": [],
             "structured_data": []
         }
+
+def format_structured_response(candidates: list) -> str:
+    """Formats candidate data into readable text"""
+    if not candidates:
+        return "No matching candidates found"
+    
+    response = [f"Found {len(candidates)} matching candidates:"]
+    
+    for i, candidate in enumerate(candidates, 1):
+        candidate_text = [
+            f"{i}. {candidate.get('name', 'Unnamed Candidate')}",
+            f"   Match Score: {candidate.get('match_score', 0)}%"
+        ]
+        
+        if candidate.get('title'):
+            candidate_text.append(f"   Current Role: {candidate['title']}")
+        if candidate.get('skills'):
+            candidate_text.append(f"   Top Skills: {', '.join(candidate['skills'][:5])}")
+        if candidate.get('experience'):
+            candidate_text.append(f"   Experience: {candidate['experience']} years")
+            
+        response.append("\n".join(candidate_text))
+    
+    return "\n\n".join(response)
 
 # Comment out or remove these lines as they might be interfering with route registrations
 # mcp = FastApiMCP(app)

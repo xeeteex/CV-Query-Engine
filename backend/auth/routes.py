@@ -44,4 +44,4 @@ def protected_route(token: str = Depends(oauth2_scheme)):
     payload = decode_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return {"msg": "You are authenticated!", "user": payload["sub"], "session_id": payload["session_id"]} 
+    return {"msg": "You are authenticated!", "user": payload["sub"], "session_id": payload["session_id"]}

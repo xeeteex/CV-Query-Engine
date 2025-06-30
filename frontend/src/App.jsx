@@ -1,54 +1,101 @@
 // src/App.jsx
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import './App.css';
 
 // Import components
 import Header from './components/Header';
-import Hero from './components/Hero';
-import QueryBox from './components/QueryBox';
-import AnswerCard from './components/AnswerCard';
-import LoadingSpinner from './components/LoadingSpinner';
-import ErrorMessage from './components/ErrorMessage';
+import ChatContainer from './components/ChatContainer';
 import Login from './components/auth/Login';
 import Register from './components/auth/Register';
+import LoadingSpinner from './components/LoadingSpinner';
 
 // Import API service
 import { cvApi } from './api/cvApi';
 
 const AppContent = () => {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [answer, setAnswer] = useState('');
-  const [sources, setSources] = useState([]);
-  const [structuredData, setStructuredData] = useState([]);
-  const { isAuthenticated, logout } = useAuth();
+  const [messages, setMessages] = useState([
+    {
+      id: 1,
+      text: 'Hello! I can help you find information from CVs. What would you like to know?',
+      isUser: false,
+      timestamp: new Date()
+    }
+  ]);
+  const { isAuthenticated, loading: authLoading, logout } = useAuth();
   const location = useLocation();
 
-  const handleAskQuestion = async (question) => {
+  // Show loading state while checking authentication
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <LoadingSpinner size="large" />
+      </div>
+    );
+  }
+
+  const handleSendMessage = useCallback(async (message, response = null, candidates = null) => {
+    // Add user message to chat
+    const userMessage = {
+      id: Date.now(),
+      text: message,
+      isUser: true,
+      timestamp: new Date(),
+      content: message
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    
+    // If response is already provided (from ChatContainer), use it
+    if (response !== null) {
+      const botMessage = {
+        id: Date.now() + 1,
+        text: response,
+        isUser: false,
+        timestamp: new Date(),
+        content: response,
+        candidates: candidates
+      };
+      setMessages(prev => [...prev, botMessage]);
+      return;
+    }
+    
+    // Fallback to old API if needed (for backward compatibility)
     setLoading(true);
-    setError(null);
-    setAnswer('');
-    setSources([]);
-    setStructuredData([]);
 
     try {
-      const response = await cvApi.askQuestion(question);
+      // Simulate API call
+      const response = await cvApi.askQuestion(message);
       
       if (response.error) {
-        setError(response.error);
-      } else {
-        setAnswer(response.answer);
-        setSources(response.sources || []);
-        setStructuredData(response.structured_data || []);
+        throw new Error(response.error);
       }
+
+      // Add assistant's response to chat
+      const assistantMessage = {
+        id: Date.now() + 1,
+        text: response.answer,
+        isUser: false,
+        timestamp: new Date(),
+        content: response.answer // For rich content
+      };
+
+      setMessages(prev => [...prev, assistantMessage]);
     } catch (err) {
-      setError(err.message || 'Failed to get answer. Please try again.');
+      const errorMessage = {
+        id: Date.now() + 1,
+        text: 'Sorry, I encountered an error. Please try again.',
+        isUser: false,
+        timestamp: new Date(),
+        isError: true
+      };
+      setMessages(prev => [...prev, errorMessage]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [cvApi]);
 
   // If user is not authenticated and not on auth pages, redirect to login
   if (!isAuthenticated && !['/login', '/register'].includes(location.pathname)) {
@@ -56,40 +103,35 @@ const AppContent = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#E1E6E9] overflow-hidden">
-      <div className="bg-white/90 max-w-7xl mx-auto min-h-screen">
-        {isAuthenticated && <Header onLogout={logout} />}
-        
-        <main className="container mx-auto px-4 py-8">
-          <Routes>
-            <Route path="/login" element={
-              <div className="pt-16">
-                <Login onLogin={() => window.location.href = '/'} />
-              </div>
-            } />
-            <Route path="/register" element={
-              <div className="pt-16">
-                <Register onRegister={() => window.location.href = '/login'} />
-              </div>
-            } />
-            <Route path="/" element={
-              <>
-                <Hero />
-                <QueryBox onAskQuestion={handleAskQuestion} loading={loading} />
-                {loading && <LoadingSpinner />}
-                {error && <ErrorMessage error={error} />}
-                {!loading && answer && (
-                  <AnswerCard 
-                    answer={answer} 
-                    sources={sources} 
-                    structuredData={structuredData} 
-                  />
-                )}
-              </>
-            } />
-          </Routes>
-        </main>
-      </div>
+    <div className="min-h-screen bg-gray-50">
+      <Routes>
+        <Route path="/login" element={
+          <div className="min-h-screen flex flex-col">
+            <Header />
+            <div className="flex-1 flex items-center justify-center px-4">
+              <Login />
+            </div>
+          </div>
+        } />
+        <Route path="/register" element={
+          <div className="min-h-screen flex flex-col">
+            <Header />
+            <div className="flex-1 flex items-center justify-center px-4">
+              <Register />
+            </div>
+          </div>
+        } />
+        <Route path="/" element={
+          <div className="flex flex-col h-screen">
+            <Header onLogout={logout} />
+            <ChatContainer 
+              messages={messages} 
+              onSendMessage={handleSendMessage} 
+              isLoading={loading}
+            />
+          </div>
+        } />
+      </Routes>
     </div>
   );
 };
