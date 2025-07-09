@@ -55,7 +55,7 @@ npm run dev
 ## Usage
 1. Start the backend server.
 2. Start the frontend dev server.
-3. Access the app at [http://localhost:5173](http://localhost:5173) (or the port shown in your terminal).
+3. Access the app at [http://localhost:5173](http://localhost:5173) 
 
 ## Environment Variables
 - Configure Pinecone, LangChain, and other secrets in the backend as needed.
