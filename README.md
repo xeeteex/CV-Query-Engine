@@ -59,6 +59,3 @@ npm run dev
 
 ## Environment Variables
 - Configure Pinecone, LangChain, and other secrets in the backend as needed.
-
-## License
-MIT
